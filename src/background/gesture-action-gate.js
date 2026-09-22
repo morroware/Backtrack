@@ -5,7 +5,7 @@ export const GESTURE_GATE_REASONS = Object.freeze({
   ACCEPTED: "ACCEPTED",
   INVALID_REQUEST: "INVALID_REQUEST",
   DUPLICATE_GESTURE: "DUPLICATE_GESTURE",
-  COOLDOWN_ACTIVE: "COOLDOWN_ACTIVE",
+  MOMENTUM_CONTINUATION: "MOMENTUM_CONTINUATION",
 });
 
 function usableId(value) {
@@ -25,7 +25,7 @@ function validGestureId(value) {
 }
 
 export class GestureActionGate {
-  constructor(storageArea, cooldownMs = 1800) {
+  constructor(storageArea, stateRetentionMs = 10_000) {
     if (
       !storageArea ||
       typeof storageArea.get !== "function" ||
@@ -34,14 +34,14 @@ export class GestureActionGate {
     ) {
       throw new TypeError("GestureActionGate requires a storage area.");
     }
-    if (!Number.isFinite(cooldownMs) || cooldownMs < 500) {
+    if (!Number.isFinite(stateRetentionMs) || stateRetentionMs < 1000) {
       throw new TypeError(
-        "GestureActionGate requires a cooldown of at least 500 ms.",
+        "GestureActionGate requires at least 1000 ms of gesture-state retention.",
       );
     }
 
     this.storageArea = storageArea;
-    this.cooldownMs = cooldownMs;
+    this.stateRetentionMs = stateRetentionMs;
     this.queues = new Map();
   }
 
@@ -100,13 +100,13 @@ export class GestureActionGate {
       ]) {
         if (
           Number.isFinite(previous?.claimedAtMs) &&
-          nowMs - previous.claimedAtMs < this.cooldownMs
+          nowMs - previous.claimedAtMs < this.stateRetentionMs &&
+          gesture?.freshStrokeEvidence !== true
         ) {
           return {
             ok: false,
-            reason: GESTURE_GATE_REASONS.COOLDOWN_ACTIVE,
+            reason: GESTURE_GATE_REASONS.MOMENTUM_CONTINUATION,
             scope,
-            retryAfterMs: this.cooldownMs - (nowMs - previous.claimedAtMs),
           };
         }
       }
@@ -116,16 +116,19 @@ export class GestureActionGate {
           schemaVersion: 1,
           gestureId: gesture.id,
           claimedAtMs: nowMs,
+          freshStrokeEvidence: gesture?.freshStrokeEvidence === true,
         },
         [windowKey]: {
           schemaVersion: 1,
           gestureId: gesture.id,
           claimedAtMs: nowMs,
+          freshStrokeEvidence: gesture?.freshStrokeEvidence === true,
         },
       });
       return {
         ok: true,
         reason: GESTURE_GATE_REASONS.ACCEPTED,
+        freshStrokeEvidence: gesture?.freshStrokeEvidence === true,
       };
     });
   }

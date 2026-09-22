@@ -106,9 +106,9 @@ function createBrowser() {
       get index() { return index; },
       get backCalls() { return backCalls; },
       get navigation() { return navigation; },
-      back: async (gestureId) => {
+      back: async (gestureId, freshStrokeEvidence = true) => {
         const result = await context.BacktrackNavigationState.requestAutomaticBackAction({
-          id: gestureId, observedAtMs: now,
+          id: gestureId, observedAtMs: now, freshStrokeEvidence,
         });
         await Promise.all([...pending]);
         return result;
@@ -128,9 +128,8 @@ for (const sameOrigin of [true, false]) {
     assert.equal(browser.tabs.get(10).active, true);
     assert.deepEqual(browser.closed, [20]);
 
-    assert.equal((await parent.back("momentum-tail")).reason, "GESTURE_DEDUPLICATED");
+    assert.equal((await parent.back("momentum-tail", false)).reason, "MOMENTUM_CONTINUATION");
     assert.equal(parent.backCalls, 0);
-    browser.advance();
     const back = await parent.back("parent-back-1");
     assert.equal(back.internalNavigationRequested, true);
     assert.equal(parent.index, 1);
@@ -138,10 +137,8 @@ for (const sameOrigin of [true, false]) {
 
     assert.equal((await parent.back("parent-back-1")).reason, "GESTURE_DEDUPLICATED");
     assert.equal(parent.backCalls, 1);
-    browser.advance();
     await parent.back("parent-back-2");
     assert.equal(parent.index, 0);
-    browser.advance();
     await parent.back("parent-empty-history");
     assert.equal(parent.index, 0);
     assert.equal(browser.tabs.has(10), true);

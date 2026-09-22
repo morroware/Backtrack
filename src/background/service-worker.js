@@ -2,12 +2,13 @@ import { createOpenerMessageListener } from "./opener-message-handler.js";
 import { createNavigationMessageListener } from "./navigation-message-handler.js";
 import { GestureActionGate } from "./gesture-action-gate.js";
 import { NavigationTracker } from "./navigation-tracker.js";
-import { createNavigationTargetListener } from "./navigation-target-handler.js";
-import { resolveSafeOpener } from "./opener-resolver.js";
+import {
+  evaluatePositionalBackDecision, markLinkOpenedByNavigationTarget,
+  performPositionalBackAction,
+} from "./positional-back.js";
 import { DiagnosticLog, diagnosticOrigin, navigationDiagnostic } from "./diagnostic-log.js";
 import { BackNavigationLoopGuard } from "./back-navigation-loop-guard.js";
 
-const LOG_PREFIX = "[Backtrack:Opener]";
 const navigationTracker = new NavigationTracker(chrome.storage.session);
 const gestureActionGate = new GestureActionGate(chrome.storage.session);
 const backNavigationLoopGuard = new BackNavigationLoopGuard();
@@ -32,6 +33,12 @@ chrome.runtime.onMessage.addListener(
     gestureActionGate,
     diagnosticLog,
     backNavigationLoopGuard,
+    {
+      evaluate: (tab, snapshot, _tabs, tracker) =>
+        evaluatePositionalBackDecision(tab, snapshot, tracker),
+      perform: (tab, snapshot, tabs, tracker) =>
+        performPositionalBackAction(tab, snapshot, tabs, chrome.windows, tracker),
+    },
   ),
 );
 
@@ -40,47 +47,27 @@ chrome.tabs.onCreated.addListener((tab) => {
     kind: "TAB_EVENT", event: "CREATED", tabId: tab.id, windowId: tab.windowId,
     openerTabId: tab.openerTabId,
   });
-  if (!Number.isInteger(tab.openerTabId)) {
-    return;
-  }
-
   void navigationTracker
-    .beginCandidate(tab)
-    .then(() => resolveSafeOpener(tab, chrome.tabs))
-    .then(async (result) => {
-      if (result.ok) {
-        await navigationTracker.confirmCandidate(tab.id, tab.openerTabId);
-      } else {
-        await navigationTracker.remove(tab.id);
-      }
-
-      console.info(LOG_PREFIX, {
-        event: "tab-created-with-opener",
-        result,
-        notice: "Validation only; no tab action. Bounded development events are recorded locally.",
-      });
+    .beginPosition(tab)
+    .catch(() => {
       recordDiagnostic({
-        kind: "TAB_EVENT", event: "OPENER_VALIDATED", tabId: tab.id,
-        windowId: tab.windowId, openerTabId: tab.openerTabId, reason: result.reason,
-      });
-    })
-    .catch(async () => {
-      await navigationTracker.remove(tab.id);
-      recordDiagnostic({
-        kind: "TAB_EVENT", event: "OPENER_VALIDATION_FAILED", tabId: tab.id,
-        windowId: tab.windowId, openerTabId: tab.openerTabId, reason: "INTERNAL_ERROR",
-      });
-      console.info(LOG_PREFIX, {
-        event: "tab-created-with-opener",
-        result: { ok: false, reason: "INTERNAL_ERROR" },
-        notice: "Validation only; no tab action. Bounded development events are recorded locally.",
+        kind: "TAB_EVENT", event: "POSITION_TRACKING_FAILED", tabId: tab.id,
+        windowId: tab.windowId, reason: "INTERNAL_ERROR",
       });
     });
 });
 
-chrome.webNavigation.onCreatedNavigationTarget.addListener(
-  createNavigationTargetListener(chrome.tabs, navigationTracker, console, recordDiagnostic),
-);
+chrome.webNavigation.onCreatedNavigationTarget.addListener((details) => {
+  void markLinkOpenedByNavigationTarget(details, chrome.tabs, navigationTracker)
+    .then(result => recordDiagnostic({
+      kind: "TAB_EVENT", event: "NAVIGATION_TARGET", tabId: details.tabId,
+      openerTabId: details.sourceTabId, reason: result.reason,
+    }))
+    .catch(() => recordDiagnostic({
+      kind: "TAB_EVENT", event: "NAVIGATION_TARGET", tabId: details.tabId,
+      reason: "TRACKER_ERROR",
+    }));
+});
 
 chrome.webNavigation.onCommitted.addListener((details) => {
   if (details.frameId !== 0) return;

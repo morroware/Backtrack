@@ -1,6 +1,6 @@
 # Local Development Event Log
 
-Status: September 17, 2026 — development version `0.6.6` (logging unchanged).
+Status: September 22, 2026 — development version `0.7.2`.
 
 ## Browse now, investigate later
 
@@ -25,13 +25,13 @@ if the user enables this development extension in private windows.
 
 | Record | Purpose |
 | --- | --- |
-| `BACK_ACTION` | Action attempted, result/rejection reason, decision reason, source tab/document/entry, opener when available, response duration, remaining cooldown when rejected. |
-| `GESTURE_SESSION` | Significant horizontal movement, classification, direction, thresholds, blockers and action-request timing. Not every raw wheel event. |
-| `GESTURE_OWNERSHIP` | Whether Backtrack or the browser currently owns navigation. |
+| `BACK_ACTION` | Action attempted, result/rejection reason, decision reason, source tab/document/entry, left-tab target when a tab closes, and response duration. Version 0.7.2 reports `MOMENTUM_CONTINUATION` when no renewed acceleration was observed. Older records may contain an opener ID or a cooldown remainder. |
+| `GESTURE_SESSION` | Significant horizontal movement, classification, direction, thresholds, blockers and action-request timing. A `RENEWED_STROKE` end reason marks a detected new acceleration inside a continuous wheel stream. Not every raw wheel event. |
+| `GESTURE_OWNERSHIP` | Whether Backtrack or the browser currently owns the gesture. Since 0.7.0, Backtrack takes calibrated Back gestures on ordinary pages, including root tabs; an ambiguous history still does not authorize closing. |
 | `NAVIGATION_STATE` | Passive page state and tracked baseline, entry/document UUIDs, same-origin Back signal, history count, redirect and uncertainty flags. Identical snapshots are deduplicated. |
 | `NAVIGATION_COMMIT` | Browser-observed document navigation, client/server redirect and back/forward qualifiers, destination origin and document identity. `BACK_REDIRECT_LOOP_DETECTED` records a successful in-memory equality correlation without storing either full address. |
 | `NAVIGATION_RESULT` | Whether the content script requested ordinary Back after an action response; this does not itself prove completion. |
-| `TAB_EVENT` | Creation, opener validation, activation, close, move to another window or replacement. |
+| `TAB_EVENT` | Creation, activation, close, move to another window or replacement. Older records may contain opener validation. |
 | `RUNTIME_EVENT` | Worker/browser startup and installation/update with extension version. |
 
 The log includes timestamps and website origins (`https://example.com` or
@@ -76,7 +76,7 @@ The preliminary review identifies action failures, slow responses, missing
 closure evidence, browser-confirmed redirected-Back loops and repeated Back
 requests from the same document/history entry without an intervening observed
 change. These are **investigation hints, not confirmed bugs**. A loop can have
-been recovered successfully. Normal cooldown rejections are not classified as
+been recovered successfully. Normal momentum-continuation rejections are not classified as
 bugs. A missing event, protected page, browser-owned gesture, cleared log or
 expired context prevents firm conclusions. The log cannot know whether an
 apparently successful action matched the user's intent.
@@ -89,10 +89,13 @@ await BacktrackGestureDebug.clearPersistentDiagnosticLog()
 
 ## Activation and verification
 
-Reload the unpacked extension and verify version `0.6.6`. Refresh already-open
-pages so their content scripts match the worker. Test closure only with
-freshly link-opened child tabs: persistent diagnostic records do not restore
-the live entry baseline of tabs that predate an update.
+Reload the unpacked extension and verify version `0.7.2`. Refresh already-open
+pages so their content scripts match the worker. Test closure first in a
+disposable window: manually opened tabs with no Back history can now close,
+and a final tab can close that window. Persistent diagnostic records do not
+restore the live entry baseline of tabs that predate an update. Such tabs
+remain open unless independent single-entry browser-history evidence is
+available.
 
 Automated coverage checks separate capacities, re-instantiation, deletion,
 schema migration, sensitive-field filtering, passive-state deduplication,

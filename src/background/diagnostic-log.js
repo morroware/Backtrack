@@ -156,6 +156,7 @@ export function sanitizeDiagnosticEntry(value, fallbackTime = Date.now()) {
   if (kind === "GESTURE_SESSION") {
     return {
       ...entry,
+      endReason: safeToken(value?.endReason),
       classification: safeToken(value?.classification),
       semanticDirection: safeToken(value?.semanticDirection),
       blockers: safeTokens(value?.blockers),
@@ -164,6 +165,7 @@ export function sanitizeDiagnosticEntry(value, fallbackTime = Date.now()) {
       directionConsistency: roundedNumber(value?.directionConsistency, 4),
       eventCount: usableId(value?.eventCount),
       peakHorizontalDeltaPx: roundedNumber(value?.peakHorizontalDeltaPx),
+      freshStrokeEvidence: optionalBoolean(value?.freshStrokeEvidence),
       automaticActionRequested: optionalBoolean(value?.automaticActionRequested),
       automaticActionTrigger: safeToken(value?.automaticActionTrigger),
       actionRequestedAfterMs: roundedNumber(value?.actionRequestedAfterMs),
@@ -182,6 +184,7 @@ export function sanitizeDiagnosticEntry(value, fallbackTime = Date.now()) {
       durationMs: roundedNumber(value?.durationMs),
       retryAfterMs: roundedNumber(value?.retryAfterMs),
       openerTabId: usableId(value?.openerTabId),
+      targetTabId: usableId(value?.targetTabId),
       navigation: sanitizeNavigation(value?.navigation),
     };
   }

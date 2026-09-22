@@ -28,12 +28,12 @@ class MemoryStorageArea {
   }
 }
 
-function gesture(id, observedAtMs) {
-  return { id, observedAtMs };
+function gesture(id, observedAtMs, freshStrokeEvidence = false) {
+  return { id, observedAtMs, freshStrokeEvidence };
 }
 
 test("one gesture can be claimed only once", async () => {
-  const gate = new GestureActionGate(new MemoryStorageArea(), 1800);
+  const gate = new GestureActionGate(new MemoryStorageArea(), 10_000);
 
   const first = await gate.claim(20, 2, gesture("gesture-a", 10_000), 10_100);
   const duplicate = await gate.claim(
@@ -48,8 +48,8 @@ test("one gesture can be claimed only once", async () => {
   assert.equal(duplicate.reason, GESTURE_GATE_REASONS.DUPLICATE_GESTURE);
 });
 
-test("a split momentum tail is blocked by the tab cooldown", async () => {
-  const gate = new GestureActionGate(new MemoryStorageArea(), 1800);
+test("a decaying momentum continuation is blocked without a fixed cooldown", async () => {
+  const gate = new GestureActionGate(new MemoryStorageArea(), 10_000);
 
   await gate.claim(20, 2, gesture("gesture-a", 10_000), 10_100);
   const tail = await gate.claim(
@@ -60,28 +60,34 @@ test("a split momentum tail is blocked by the tab cooldown", async () => {
   );
 
   assert.equal(tail.ok, false);
-  assert.equal(tail.reason, GESTURE_GATE_REASONS.COOLDOWN_ACTIVE);
+  assert.equal(tail.reason, GESTURE_GATE_REASONS.MOMENTUM_CONTINUATION);
   assert.equal(tail.scope, "TAB");
-  assert.equal(tail.retryAfterMs, 1400);
+  const muchLaterTail = await gate.claim(
+    20,
+    2,
+    gesture("gesture-late-tail", 15_000),
+    15_100,
+  );
+  assert.equal(muchLaterTail.reason, GESTURE_GATE_REASONS.MOMENTUM_CONTINUATION);
 });
 
-test("a later physical gesture can be claimed", async () => {
-  const gate = new GestureActionGate(new MemoryStorageArea(), 1800);
+test("a newly accelerating physical gesture is accepted immediately", async () => {
+  const gate = new GestureActionGate(new MemoryStorageArea(), 10_000);
 
   await gate.claim(20, 2, gesture("gesture-a", 10_000), 10_100);
   const later = await gate.claim(
     20,
     2,
-    gesture("gesture-b", 12_000),
-    12_050,
+    gesture("gesture-b", 10_250, true),
+    10_300,
   );
 
   assert.equal(later.ok, true);
 });
 
-test("momentum is blocked across a tab switch in the same window", async () => {
+test("momentum is blocked across a tab switch but renewed acceleration is accepted", async () => {
   const storage = new MemoryStorageArea();
-  const gate = new GestureActionGate(storage, 1800);
+  const gate = new GestureActionGate(storage, 10_000);
 
   await gate.claim(20, 2, gesture("gesture-a", 10_000), 10_100);
   const openerTail = await gate.claim(
@@ -92,19 +98,18 @@ test("momentum is blocked across a tab switch in the same window", async () => {
   );
 
   assert.equal(openerTail.ok, false);
-  assert.equal(openerTail.reason, GESTURE_GATE_REASONS.COOLDOWN_ACTIVE);
+  assert.equal(openerTail.reason, GESTURE_GATE_REASONS.MOMENTUM_CONTINUATION);
   assert.equal(openerTail.scope, "WINDOW");
 
-  await gate.removeWindow(2);
   assert.equal(
-    (await gate.claim(10, 2, gesture("gesture-b", 10_300), 10_400)).ok,
+    (await gate.claim(10, 2, gesture("gesture-b", 10_300, true), 10_400)).ok,
     true,
   );
 });
 
-test("cooldowns are independent across windows and tab state is removable", async () => {
+test("gesture state is independent across windows and removable", async () => {
   const storage = new MemoryStorageArea();
-  const gate = new GestureActionGate(storage, 1800);
+  const gate = new GestureActionGate(storage, 10_000);
 
   await gate.claim(20, 2, gesture("gesture-a", 10_000), 10_100);
   assert.equal(
@@ -119,8 +124,17 @@ test("cooldowns are independent across windows and tab state is removable", asyn
   );
 });
 
+test("stale protection state eventually expires as a recovery fallback", async () => {
+  const gate = new GestureActionGate(new MemoryStorageArea(), 10_000);
+  await gate.claim(20, 2, gesture("gesture-a", 10_000), 10_100);
+  assert.equal(
+    (await gate.claim(20, 2, gesture("gesture-b", 20_200), 20_201)).ok,
+    true,
+  );
+});
+
 test("stale, future, malformed, and tabless requests are rejected", async () => {
-  const gate = new GestureActionGate(new MemoryStorageArea(), 1800);
+  const gate = new GestureActionGate(new MemoryStorageArea(), 10_000);
 
   for (const [tabId, windowId, request, now] of [
     [null, 2, gesture("a", 10_000), 10_100],

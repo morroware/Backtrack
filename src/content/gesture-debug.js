@@ -9,7 +9,7 @@
     return;
   }
 
-  const VERSION = "0.6.5";
+  const VERSION = "0.7.2";
   const LOG_PREFIX = "[Backtrack:Gesture]";
   const SESSION_SUMMARY_PREFIX = "[Backtrack:Gesture:SessionJSON]";
   const THRESHOLD_SUMMARY_PREFIX = "[Backtrack:Gesture:ThresholdJSON]";
@@ -32,11 +32,13 @@
 
   const classifier = globalThis.BacktrackGestureClassifier;
   const commitPolicy = globalThis.BacktrackGestureCommitPolicy;
+  const strokeBoundary = globalThis.BacktrackGestureStrokeBoundary;
   const visualPolicy = globalThis.BacktrackGestureVisualPolicy;
   const gestureIndicator = globalThis.BacktrackGestureIndicator ?? null;
   if (
     !classifier ||
     !commitPolicy ||
+    !strokeBoundary ||
     !visualPolicy ||
     (window === window.top && !gestureIndicator)
   ) {
@@ -46,9 +48,11 @@
         ? "GESTURE_CLASSIFIER_UNAVAILABLE"
         : !commitPolicy
           ? "GESTURE_COMMIT_POLICY_UNAVAILABLE"
-          : !visualPolicy
-            ? "GESTURE_VISUAL_POLICY_UNAVAILABLE"
-            : "GESTURE_INDICATOR_UNAVAILABLE",
+          : !strokeBoundary
+            ? "GESTURE_STROKE_BOUNDARY_UNAVAILABLE"
+            : !visualPolicy
+              ? "GESTURE_VISUAL_POLICY_UNAVAILABLE"
+              : "GESTURE_INDICATOR_UNAVAILABLE",
     });
     return;
   }
@@ -80,6 +84,7 @@
   let sessionSequence = 0;
   let listening = false;
   let automaticActionInFlight = false;
+  let nextSessionFreshStrokeEvidence = false;
   let nativeRootBack = false;
   let pendingNativeRootBack = null;
   let lastRecordedGestureOwner = null;
@@ -185,6 +190,7 @@
     sendDiagnosticMessage(DIAGNOSTIC_MESSAGE_TYPES.RECORD, {
       diagnostic: {
         kind: "GESTURE_SESSION",
+        endReason: summary?.reason === "renewed-stroke" ? "RENEWED_STROKE" : null,
         classification: evaluation?.classification,
         semanticDirection: evaluation?.semanticNavigationDirection,
         blockers: evaluation?.automaticAction?.blockers,
@@ -193,6 +199,7 @@
         directionConsistency: measurements?.directionConsistency,
         eventCount: measurements?.eventCount,
         peakHorizontalDeltaPx: measurements?.peakHorizontalDeltaPx,
+        freshStrokeEvidence: summary?.freshStrokeEvidence,
         automaticActionRequested: summary?.actionTiming?.requested,
         automaticActionTrigger: summary?.actionTiming?.trigger,
         actionRequestedAfterMs: summary?.actionTiming?.requestedAfterMs,
@@ -358,6 +365,9 @@
       modifierEventCount: 0,
       untrustedEventCount: 0,
       possibleMomentumTailEventCount: 0,
+      freshStrokeEvidence: nextSessionFreshStrokeEvidence,
+      strokeStartDetector: strokeBoundary.create(),
+      renewedStrokeDetector: strokeBoundary.create(),
       peakHorizontalDelta: 0,
       peakHorizontalEventIndex: 0,
       thresholdReported: false,
@@ -493,6 +503,7 @@
         heuristic: "DECAY_TAIL_ONLY",
         possibleTailEventCount: session.possibleMomentumTailEventCount,
       },
+      freshStrokeEvidence: session.freshStrokeEvidence,
       actionTiming: {
         earlyCommitArmedAfterMs:
           session.earlyCommitArmedAtMs === null
@@ -611,6 +622,7 @@
       const response = await navigationStateApi.requestAutomaticBackAction({
         id: summary.sessionId,
         observedAtMs: summary.startedAtEpochMs,
+        freshStrokeEvidence: summary.freshStrokeEvidence === true,
       });
       record(
         "automatic-back-action",
@@ -620,7 +632,8 @@
       if (
         response?.action !== "USE_INTERNAL_HISTORY" &&
         response?.action !== "USE_BROWSER_HISTORY" &&
-        response?.action !== "RETURNED_TO_OPENER"
+        response?.action !== "CLOSED_TAB_TO_LEFT" &&
+        response?.action !== "CLOSED_WINDOW"
       ) {
         gestureIndicator?.hide({ delayMs: 0 });
       }
@@ -729,13 +742,34 @@
   }
 
   function handleWheel(event) {
-    // A root tab has no cross-tab return to implement. Leave its input stream,
-    // native gesture animation, and gesture/momentum boundaries to Chromium.
+    // Leave input to Chromium only when browser-owned navigation is active.
     if (nativeRootBack) {
       return;
     }
     const now = performance.now();
     const normalized = normalizeDeltas(event);
+
+    if (activeSession?.automaticActionRequested && !automaticActionInFlight) {
+      const previous = activeSession;
+      const horizontalScrollContext = findHorizontalScrollContext(event, normalized.x);
+      const newStroke = strokeBoundary.observe(previous.renewedStrokeDetector, {
+        deltaX: normalized.x,
+        deltaY: normalized.y,
+        eligibleInput: event.isTrusted &&
+          event.deltaMode === WheelEvent.DOM_DELTA_PIXEL &&
+          !event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey &&
+          Math.sign(normalized.x) === Math.sign(previous.netX) &&
+          horizontalScrollContext?.canConsumeInDeltaDirection !== true,
+      });
+      if (newStroke) {
+        nextSessionFreshStrokeEvidence = true;
+        finishSession("renewed-stroke");
+        record("renewed-stroke-detected", {
+          previousSessionId: previous.id,
+          notice: "A strong new acceleration followed the earlier gesture's decay.",
+        }, "info");
+      }
+    }
 
     if (
       activeSession &&
@@ -750,6 +784,7 @@
 
     if (!activeSession) {
       activeSession = createSession(now);
+      nextSessionFreshStrokeEvidence = false;
       record(
         "session-start",
         {
@@ -776,6 +811,17 @@
     const horizontalScrollContext = findHorizontalScrollContext(
       event,
       normalized.x,
+    );
+    session.freshStrokeEvidence ||= strokeBoundary.observe(
+      session.strokeStartDetector,
+      {
+        deltaX: normalized.x,
+        deltaY: normalized.y,
+        eligibleInput: event.isTrusted &&
+          event.deltaMode === WheelEvent.DOM_DELTA_PIXEL &&
+          !event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey &&
+          horizontalScrollContext?.canConsumeInDeltaDirection !== true,
+      },
     );
     const absoluteX = Math.abs(normalized.x);
     const absoluteY = Math.abs(normalized.y);
@@ -1114,7 +1160,7 @@
     // gesture that we actually need to diagnose.
     if (owner !== lastRecordedGestureOwner) {
       lastRecordedGestureOwner = owner;
-      const reason = nativeRootBack ? "NO_OPENER" : "CHILD_OR_UNCONFIRMED";
+      const reason = nativeRootBack ? "BROWSER" : "POSITIONAL_BACK";
       record("gesture-ownership", { owner, reason }, "info");
       sendDiagnosticMessage(DIAGNOSTIC_MESSAGE_TYPES.RECORD, {
         diagnostic: {
@@ -1126,27 +1172,15 @@
     }
   }
 
-  async function refreshGestureOwnership() {
+  function refreshGestureOwnership() {
     if (frameContext.kind !== "TOP" || !semanticSettings.automaticActionsEnabled) {
       return;
     }
-    const requestSequence = ++ownershipRequestSequence;
-    pendingNativeRootBack = null;
-    try {
-      // This uses both Chromium's openerTabId and the exact navigation-target
-      // fallback. Missing Navigation API history is NOT evidence of a root tab.
-      const decision = await globalThis.BacktrackNavigationState?.requestBackDecision?.(
-        "gesture-ownership",
-      );
-      if (requestSequence !== ownershipRequestSequence) {
-        return;
-      }
-      pendingNativeRootBack = decision?.reason === "NO_OPENER";
-      applyPendingGestureOwnership();
-    } catch {
-      // Keep the existing mode on a transient error. In particular, an error
-      // must not take native Back away from a previously verified root tab.
-    }
+    // Backtrack owns Back on every ordinary page, including root tabs.
+    // The background still refuses a close when the history boundary is unclear.
+    ++ownershipRequestSequence;
+    pendingNativeRootBack = false;
+    applyPendingGestureOwnership();
   }
 
   function applySemanticSettings(value, source) {

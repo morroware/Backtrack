@@ -314,7 +314,7 @@ test("duplicate and unsupported automatic action requests fail closed", async (t
     };
     const gate = {
       async claim() {
-        return { ok: false, reason: "COOLDOWN_ACTIVE" };
+        return { ok: false, reason: "MOMENTUM_CONTINUATION" };
       },
     };
     const listener = createNavigationMessageListener(tabsApi, {}, gate);
@@ -334,8 +334,8 @@ test("duplicate and unsupported automatic action requests fail closed", async (t
       );
     });
 
-    assert.equal(response.reason, "GESTURE_DEDUPLICATED");
-    assert.equal(response.gestureGate.reason, "COOLDOWN_ACTIVE");
+    assert.equal(response.reason, "MOMENTUM_CONTINUATION");
+    assert.equal(response.gestureGate.reason, "MOMENTUM_CONTINUATION");
     assert.equal(tabApiUsed, false);
   });
 

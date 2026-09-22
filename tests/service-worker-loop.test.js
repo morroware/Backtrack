@@ -50,18 +50,18 @@ async function assertWorkerRecovery(t, navigationType) {
   let now = Date.now();
   t.mock.method(Date, "now", () => now);
   const opener = {
-    id: 10, windowId: 1, active: false, pinned: false, discarded: false,
+    id: 10, index: 0, windowId: 1, active: false, pinned: false, discarded: false,
     incognito: false, groupId: -1,
   };
   const child = {
-    id: 20, openerTabId: 10, windowId: 1, active: true, pinned: false,
+    id: 20, index: 1, openerTabId: 10, windowId: 1, active: true, pinned: false,
     discarded: false, incognito: false, groupId: -1,
   };
   const tabs = new Map([[10, opener], [20, child]]);
   const chrome = {
     storage: { session: storage(), local: storage() },
     runtime: {
-      getManifest: () => ({ version: "0.6.6" }),
+      getManifest: () => ({ version: "0.7.2" }),
       onMessage: event(), onStartup: event(), onInstalled: event(),
     },
     tabs: {
@@ -78,11 +78,19 @@ async function assertWorkerRecovery(t, navigationType) {
         return this.get(id);
       },
       async remove(id) { tabs.delete(id); },
+      async query({ windowId }) {
+        return [...tabs.values()].filter(tab => tab.windowId === windowId)
+          .map(tab => structuredClone(tab));
+      },
       onCreated: event(), onRemoved: event(), onReplaced: event(),
       onActivated: event(), onAttached: event(), onDetached: event(),
     },
     webNavigation: { onCreatedNavigationTarget: event(), onCommitted: event() },
-    windows: { onRemoved: event() },
+    windows: {
+      onRemoved: event(),
+      async get(id) { return { id, type: "normal", focused: true }; },
+      async remove() { throw new Error("Only a child tab should close here"); },
+    },
   };
   globalThis.chrome = chrome;
   const settle = () => new Promise(resolve => setImmediate(resolve));
@@ -182,21 +190,21 @@ async function assertWorkerRecovery(t, navigationType) {
         source: "AUTOMATIC", id: "rapid-follow-up", observedAtMs: now,
       },
     }, sender(ids.bouncedGithub, githubUrl));
-    assert.equal(tooSoon.reason, "GESTURE_DEDUPLICATED");
-    assert.equal(tooSoon.gestureGate.reason, "COOLDOWN_ACTIVE");
-    assert.equal(tooSoon.gestureGate.retryAfterMs, 178);
+    assert.equal(tooSoon.reason, "MOMENTUM_CONTINUATION");
+    assert.equal(tooSoon.gestureGate.reason, "MOMENTUM_CONTINUATION");
     assert.equal(tabs.has(20), true);
     assert.equal(tabs.get(10).active, false);
 
-    now += 1891;
+    now += 50;
     const recovered = await send({
       type: MESSAGE_TYPES.PERFORM_CONFIRMED_BACK_ACTION,
       snapshot: bouncedSnapshot,
       gesture: {
         source: "AUTOMATIC", id: "next-deliberate-gesture", observedAtMs: now,
+        freshStrokeEvidence: true,
       },
     }, sender(ids.bouncedGithub, githubUrl));
-    assert.equal(recovered.action, "RETURNED_TO_OPENER");
+    assert.equal(recovered.action, "CLOSED_TAB_TO_LEFT");
     assert.equal(recovered.decision.reason, "TRACKED_BACK_REDIRECT_LOOP_ENTRY_POINT");
     assert.equal(tabs.has(20), false);
     assert.equal(tabs.get(10).active, true);
@@ -211,7 +219,7 @@ async function assertWorkerRecovery(t, navigationType) {
     ));
     assert.ok(report.entries.some(entry =>
       entry.kind === "BACK_ACTION" && entry.source === "AUTOMATIC" &&
-      entry.action === "RETURNED_TO_OPENER" &&
+      entry.action === "CLOSED_TAB_TO_LEFT" &&
       entry.decisionReason === "TRACKED_BACK_REDIRECT_LOOP_ENTRY_POINT",
     ));
   } finally {
@@ -220,6 +228,6 @@ async function assertWorkerRecovery(t, navigationType) {
 }
 
 for (const navigationType of ["push", "replace", "traverse"]) {
-  test(`the real worker recovers a redirected-Back ${navigationType} loop after the cooldown`,
+  test(`the real worker recovers a redirected-Back ${navigationType} loop on renewed acceleration`,
     async (t) => assertWorkerRecovery(t, navigationType));
 }

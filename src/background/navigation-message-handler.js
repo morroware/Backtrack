@@ -12,6 +12,10 @@ export function createNavigationMessageListener(
   gestureActionGate = null,
   diagnosticLog = null,
   backNavigationLoopGuard = null,
+  strategy = {
+    evaluate: evaluateBackDecision,
+    perform: performConfirmedBackAction,
+  },
 ) {
   const recordDiagnostic = async (entry) => {
     try {
@@ -40,6 +44,7 @@ export function createNavigationMessageListener(
     gateReason,
     retryAfterMs: result?.gestureGate?.retryAfterMs,
     openerTabId: result?.openerTabId ?? result?.decision?.opener?.openerTab?.id,
+    targetTabId: result?.targetTabId,
     navigation: navigationDiagnostic(message?.snapshot),
   });
 
@@ -87,7 +92,7 @@ export function createNavigationMessageListener(
     }
 
     if (message?.type === MESSAGE_TYPES.GET_BACK_DECISION) {
-      evaluateBackDecision(
+      strategy.evaluate(
         sender?.tab,
         message.snapshot,
         tabsApi,
@@ -185,7 +190,9 @@ export function createNavigationMessageListener(
           if (!claim.ok) {
             const result = {
               action: "NO_SPECIAL_ACTION",
-              reason: "GESTURE_DEDUPLICATED",
+              reason: claim.reason === "DUPLICATE_GESTURE"
+                ? "GESTURE_DEDUPLICATED"
+                : claim.reason,
               gestureGate: claim,
             };
             return logAction(result, claim.reason);
@@ -198,7 +205,7 @@ export function createNavigationMessageListener(
           return logAction(result);
         }
 
-        const result = await performConfirmedBackAction(
+        const result = await strategy.perform(
           sender?.tab,
           message.snapshot,
           tabsApi,

@@ -385,8 +385,9 @@ this evidence without changing the historical Phase 1 measurements above:
   after remaining eligible for a further 90 ms, avoiding the complete macOS
   momentum tail;
 - completed-sequence evaluation remains the fallback;
-- a session-backed 1.8-second tab-and-window gate rejects duplicate IDs and
-  momentum tails that continue after navigation or a tab switch.
+- a session-backed tab-and-window gate rejects duplicate IDs and decaying
+  momentum tails after navigation or a tab switch; since version 0.7.2,
+  explicit renewed-acceleration evidence is accepted without a fixed wait.
 
 This is implementation progress, not new physical-trackpad evidence and not a
 production Go. The extended real-site and multi-configuration matrix remains

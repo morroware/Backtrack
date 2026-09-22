@@ -6,6 +6,7 @@ import test from "node:test";
 const sources = [
   "shared/gesture-classifier.js",
   "shared/gesture-commit-policy.js",
+  "shared/gesture-stroke-boundary.js",
   "shared/gesture-visual-policy.js",
   "content/gesture-debug.js",
 ].map((path) => readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8"));
@@ -19,6 +20,7 @@ async function createPage(initialDecision = rootDecision, originalStyle = "") {
   let now = 0;
   let timerId = 0;
   let calls = 0;
+  const requestedGestures = [];
   let previews = 0;
   const timers = new Map();
   const listeners = new Map();
@@ -64,7 +66,11 @@ async function createPage(initialDecision = rootDecision, originalStyle = "") {
     BacktrackNavigationState: {
       async requestBackDecision() { return typeof decision === "function" ? decision() : decision; },
       getDiagnosticSnapshot: () => ({}),
-      async requestAutomaticBackAction() { calls++; return { action: "USE_BROWSER_HISTORY" }; },
+      async requestAutomaticBackAction(gesture) {
+        calls++;
+        requestedGestures.push(structuredClone(gesture));
+        return { action: "USE_BROWSER_HISTORY" };
+      },
     },
     BacktrackGestureIndicator: {
       update() { previews++; }, hide() {}, commit() {}, destroy() {}, getStatus: () => ({}),
@@ -90,40 +96,57 @@ async function createPage(initialDecision = rootDecision, originalStyle = "") {
   return {
     api: context.BacktrackGestureDebug, root,
     get calls() { return calls; }, get previews() { return previews; },
+    get requestedGestures() { return structuredClone(requestedGestures); },
     emit, advance,
     async decide(next) { decision = next; emit("visibilitychange"); await flush(); },
     async disable() { changed.forEach(fn => fn({ "backtrack.gesture.settings": { newValue: { ...settings, automaticActionsEnabled: false } } }, "local")); await flush(); },
     async wheel(count = 12) {
       for (let i = 0; i < count; i++) {
-        emit("wheel", {
-          deltaX: -70, deltaY: 0, deltaZ: 0, deltaMode: 0, isTrusted: true,
-          cancelable: true, defaultPrevented: false, clientX: 400, clientY: 300,
-          composedPath: () => [root], target: root,
-          preventDefault() { assert.fail("Do not cancel ordinary wheel input"); },
-        });
-        await advance(10);
+        await this.wheelDelta(-70);
       }
+    },
+    async wheelDelta(deltaX) {
+      emit("wheel", {
+        deltaX, deltaY: 0, deltaZ: 0, deltaMode: 0, isTrusted: true,
+        cancelable: true, defaultPrevented: false, clientX: 400, clientY: 300,
+        composedPath: () => [root], target: root,
+        preventDefault() { assert.fail("Do not cancel ordinary wheel input"); },
+      });
+      await advance(10);
     },
   };
 }
 
-test("a verified root leaves normal Back to Chromium without a custom action or icon", async () => {
+test("a new acceleration after a long momentum tail can start a fresh gesture", async () => {
   const page = await createPage();
-  assert.equal(page.api.getStatus().navigationOwner, "BROWSER");
-  assert.equal(page.root.style.getPropertyValue("overscroll-behavior-x"), "");
-  // Two intentional inputs less than the action gate's 1.8 seconds apart must
-  // never enter that gate at all. Native momentum handling stays browser-owned.
   await page.wheel();
-  await page.advance(350);
-  await page.wheel();
-  await page.advance(250);
-  assert.equal(page.calls, 0);
-  assert.equal(page.previews, 0);
-  assert.equal(page.api.getStatus().activeSessionId, null);
+  await page.advance(100);
+  assert.equal(page.calls, 1);
+  for (const magnitude of [60, 45, 30, 18, 12, ...Array(40).fill(9)]) {
+    await page.wheelDelta(-magnitude);
+  }
+  assert.equal(page.calls, 1);
+  for (const magnitude of [12, 21, 35, 60, ...Array(15).fill(100)]) {
+    await page.wheelDelta(-magnitude);
+  }
+  await page.advance(100);
+  assert.equal(page.calls, 2);
+  assert.equal(page.requestedGestures[1].freshStrokeEvidence, true);
 });
 
-test("native root ownership preserves site-supplied overscroll styles", async () => {
+test("an opener-free tab now sends a confirmed Back gesture through Backtrack", async () => {
+  const page = await createPage();
+  assert.equal(page.api.getStatus().navigationOwner, "BACKTRACK");
+  assert.equal(page.root.style.getPropertyValue("overscroll-behavior-x"), "contain");
+  await page.wheel();
+  await page.advance(100);
+  assert.equal(page.calls, 1);
+});
+
+test("disabling positional navigation restores site-supplied overscroll styles", async () => {
   const page = await createPage(rootDecision, "none");
+  assert.equal(page.root.style.getPropertyValue("overscroll-behavior-x"), "contain");
+  await page.disable();
   assert.equal(page.root.style.getPropertyValue("overscroll-behavior-x"), "none");
   assert.equal(page.root.style.getPropertyPriority("overscroll-behavior-x"), "");
 });
@@ -146,39 +169,25 @@ test("missing child history or a closed opener is not proof of a root", async ()
   }
 });
 
-test("ownership does not switch midway through an active wheel sequence", async () => {
+test("opener decisions do not release containment midway through a gesture", async () => {
   const page = await createPage(childDecision);
   await page.wheel(2);
   await page.decide(rootDecision);
   assert.equal(page.api.getStatus().navigationOwner, "BACKTRACK");
   await page.advance(250);
-  assert.equal(page.api.getStatus().navigationOwner, "BROWSER");
+  assert.equal(page.api.getStatus().navigationOwner, "BACKTRACK");
   assert.equal(page.calls, 0);
 });
 
-test("a stale root reply cannot override a more recent child decision", async () => {
+test("a failed decision query does not remove positional ownership", async () => {
   const page = await createPage(childDecision);
-  let resolve;
-  await page.decide(() => new Promise(done => { resolve = done; }));
-  await page.decide(childDecision);
-  resolve(rootDecision);
-  await flush();
+  await page.decide(() => { throw new Error("Worker temporarily unavailable"); });
   assert.equal(page.api.getStatus().navigationOwner, "BACKTRACK");
 });
 
-test("a transient refresh failure leaves a verified root browser-owned", async () => {
+test("disabling positional actions removes root containment", async () => {
   const page = await createPage();
-  await page.decide(() => { throw new Error("Worker temporarily unavailable"); });
-  assert.equal(page.api.getStatus().navigationOwner, "BROWSER");
-});
-
-test("disabling actions invalidates outstanding ownership requests", async () => {
-  const page = await createPage();
-  let resolve;
-  await page.decide(() => new Promise(done => { resolve = done; }));
   await page.disable();
-  resolve(childDecision);
-  await flush();
   assert.equal(page.root.style.getPropertyValue("overscroll-behavior-x"), "");
   assert.equal(page.api.getStatus().semanticSettings.automaticActionsEnabled, false);
 });

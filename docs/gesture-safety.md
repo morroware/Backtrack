@@ -175,15 +175,24 @@ extended real-site matrix before a production MVP decision.
 Standard `WheelEvent` exposes no dependable momentum phase. Backtrack therefore
 marks a content sequence as already requested before any early action and the
 service worker atomically claims the gesture ID in `chrome.storage.session`.
-The 1.8-second cooldown is stored both for the sending tab and its browser
-window.
+The latest accepted gesture state is retained for the sending tab and its
+browser window, but it is not a fixed waiting period.
 
 The window guard matters because an early action can navigate the document or
 activate an opener while the old physical movement is still producing events.
 If that remainder reaches the newly active document, it is rejected instead of
 causing a second history step or closing another level of the tab tree. The
 guard survives document navigation and service-worker suspension. The tradeoff
-is that an unusually fast intentional second back gesture may be ignored.
+is that an abrupt second movement without a measurable low-to-high ramp may be
+ignored conservatively.
+
+Version 0.7.2 separates a strong renewed acceleration after a decaying tail
+into a new content-script gesture session. Three sustained increases from a
+low-intensity valley to a meaningful peak provide explicit fresh-stroke
+evidence. The background accepts that evidence immediately, even directly
+after a tab switch. A merely decaying or noisy tail remains blocked. Retained
+state expires after ten seconds only as a recovery fallback; normal operation
+does not wait for that expiry.
 
 ## Internal history and opener behavior
 

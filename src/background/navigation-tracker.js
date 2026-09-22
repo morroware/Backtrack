@@ -32,6 +32,7 @@ export const NAVIGATION_REASONS = Object.freeze({
   NAVIGATION_IN_PROGRESS: "NAVIGATION_IN_PROGRESS",
   INVALID_TAB: "INVALID_TAB",
   LIVE_ENTRY_MISMATCH: "LIVE_ENTRY_MISMATCH",
+  ROOT_HISTORY_BEFORE_BASELINE: "ROOT_HISTORY_BEFORE_BASELINE",
 });
 
 const NAVIGATION_TYPES = new Set(["push", "replace", "reload", "traverse"]);
@@ -76,6 +77,34 @@ function normalizeOpenerSource(value) {
     : null;
 }
 
+function createInitialState(tabId, openerTabId, openerSource, openerValidated) {
+  return {
+    schemaVersion: 2,
+    tabId,
+    openerTabId,
+    openerSource,
+    openerValidated,
+    createdFromTab: false,
+    status: NAVIGATION_TRACKING_STATUS.AWAITING_ENTRY,
+    baselineEntryKey: null,
+    baselineHistoryLength: null,
+    currentEntryKey: null,
+    revision: 0,
+    lastNavigationType: null,
+    sameOriginCanGoBack: null,
+    transitionActive: false,
+    uncertaintyReason: null,
+    documentId: null,
+    documentHasUserActivation: null,
+    initialRedirectChainOpen: true,
+    pendingRedirectDocumentId: null,
+    baselineAllowsSameOriginBack: false,
+    baselineFromInitialRedirect: false,
+    pendingBackRedirectLoopDocumentId: null,
+    backRedirectLoopEntryKey: null,
+  };
+}
+
 export function createCandidateState(tab, relationship = null) {
   const tabId = usableId(tab?.id);
   const liveOpenerTabId = usableId(tab?.openerTabId);
@@ -93,28 +122,17 @@ export function createCandidateState(tab, relationship = null) {
     return null;
   }
 
+  return createInitialState(tabId, openerTabId, openerSource, false);
+}
+
+export function createPositionState(tab, linkedEvidence = false) {
+  const tabId = usableId(tab?.id);
+  if (tabId === null) return null;
+  // A browser-reported opener is evidence that the tab was link-opened, not
+  // the destination for a positional Back action.
   return {
-    schemaVersion: 2,
-    tabId,
-    openerTabId,
-    openerSource,
-    openerValidated: false,
-    status: NAVIGATION_TRACKING_STATUS.AWAITING_ENTRY,
-    baselineEntryKey: null,
-    currentEntryKey: null,
-    revision: 0,
-    lastNavigationType: null,
-    sameOriginCanGoBack: null,
-    transitionActive: false,
-    uncertaintyReason: null,
-    documentId: null,
-    documentHasUserActivation: null,
-    initialRedirectChainOpen: true,
-    pendingRedirectDocumentId: null,
-    baselineAllowsSameOriginBack: false,
-    baselineFromInitialRedirect: false,
-    pendingBackRedirectLoopDocumentId: null,
-    backRedirectLoopEntryKey: null,
+    ...createInitialState(tabId, null, null, true),
+    createdFromTab: linkedEvidence === true || usableId(tab?.openerTabId) !== null,
   };
 }
 
@@ -157,6 +175,8 @@ export function applyNavigationSnapshot(state, snapshot) {
       ...common,
       status: NAVIGATION_TRACKING_STATUS.READY,
       baselineEntryKey: entryKey,
+      baselineHistoryLength: Number.isInteger(snapshot.historyLength)
+        ? snapshot.historyLength : null,
       currentEntryKey: entryKey,
       uncertaintyReason: null,
     };
@@ -262,7 +282,9 @@ export function assessTrackedNavigation(state, liveSnapshot = null) {
     if (
       state.backRedirectLoopEntryKey === state.currentEntryKey &&
       state.sameOriginCanGoBack === false &&
-      liveSnapshot?.sameOriginCanGoBack === false
+      liveSnapshot?.sameOriginCanGoBack === false &&
+      (state.openerTabId !== null || state.createdFromTab === true ||
+        state.baselineHistoryLength === 1)
     ) {
       return {
         availability: NAVIGATION_AVAILABILITY.AT_ENTRY_POINT,
@@ -282,6 +304,17 @@ export function assessTrackedNavigation(state, liveSnapshot = null) {
     return {
       availability: NAVIGATION_AVAILABILITY.UNKNOWN,
       reason: NAVIGATION_REASONS.CONTRADICTORY_BROWSER_SIGNAL,
+    };
+  }
+
+
+  // The first observed HTTP page may already have earlier browser entries
+  // (for example a New Tab page). Never close it at that observed baseline.
+  if (state.openerTabId === null && state.createdFromTab !== true &&
+      state.baselineHistoryLength !== 1) {
+    return {
+      availability: NAVIGATION_AVAILABILITY.UNKNOWN,
+      reason: NAVIGATION_REASONS.ROOT_HISTORY_BEFORE_BASELINE,
     };
   }
 
@@ -360,6 +393,21 @@ export class NavigationTracker {
         });
       }
 
+      return existing;
+    });
+  }
+
+  beginPosition(tab, linkedEvidence = false) {
+    const state = createPositionState(tab, linkedEvidence);
+    if (!state) return Promise.resolve(null);
+    return this.#enqueue(state.tabId, async () => {
+      const existing = await this.#read(state.tabId);
+      if (!existing) return this.#write(state.tabId, state);
+      if (state.createdFromTab === true && existing.createdFromTab !== true) {
+        return this.#write(state.tabId, {
+          ...existing, createdFromTab: true, revision: existing.revision + 1,
+        });
+      }
       return existing;
     });
   }
