@@ -1,6 +1,6 @@
 # Local Development Event Log
 
-Status: September 22, 2026 — development version `0.7.2`.
+Status: September 22, 2026 — development version `0.7.3`.
 
 ## Browse now, investigate later
 
@@ -25,9 +25,10 @@ if the user enables this development extension in private windows.
 
 | Record | Purpose |
 | --- | --- |
-| `BACK_ACTION` | Action attempted, result/rejection reason, decision reason, source tab/document/entry, left-tab target when a tab closes, and response duration. Version 0.7.2 reports `MOMENTUM_CONTINUATION` when no renewed acceleration was observed. Older records may contain an opener ID or a cooldown remainder. |
-| `GESTURE_SESSION` | Significant horizontal movement, classification, direction, thresholds, blockers and action-request timing. A `RENEWED_STROKE` end reason marks a detected new acceleration inside a continuous wheel stream. Not every raw wheel event. |
-| `GESTURE_OWNERSHIP` | Whether Backtrack or the browser currently owns the gesture. Since 0.7.0, Backtrack takes calibrated Back gestures on ordinary pages, including root tabs; an ambiguous history still does not authorize closing. |
+| `BACK_ACTION` | Action attempted, result/rejection reason, decision reason, source tab/document/entry, left-tab target when a tab closes, and response duration. Includes `gestureId`, physical-event count and `inputEndReason` (`NATIVE_MOMENTUM` or `INPUT_IDLE`). In 0.7.3, `MOMENTUM_CONTINUATION` means overlapping input intervals, not an acceleration test. Older records retain their older semantics. |
+| `GESTURE_SESSION` | Significant horizontal movement, classification, direction, thresholds, blockers and action-request timing. Shares the action's `gestureId`. `NATIVE_MOMENTUM` or `SETTLED` ends direct input; `TAB_HIDDEN` cancels an incomplete session. Counts and distances exclude inertia. Not every raw wheel event. |
+| `GESTURE_INPUT` | Transitions between `PHYSICAL` and `MOMENTUM`, or missing support (`UNSUPPORTED`). This is browser phase evidence, not proof of a deliberate Back gesture. No raw wheel stream is persisted. |
+| `GESTURE_OWNERSHIP` | Whether Backtrack or the browser currently owns the gesture. Since 0.7.0, Backtrack takes calibrated Back gestures on ordinary pages, including root tabs; an ambiguous history still does not authorize closing. Since 0.7.3, a browser without native momentum support keeps native Back (`NATIVE_MOMENTUM_UNAVAILABLE`). |
 | `NAVIGATION_STATE` | Passive page state and tracked baseline, entry/document UUIDs, same-origin Back signal, history count, redirect and uncertainty flags. Identical snapshots are deduplicated. |
 | `NAVIGATION_COMMIT` | Browser-observed document navigation, client/server redirect and back/forward qualifiers, destination origin and document identity. `BACK_REDIRECT_LOOP_DETECTED` records a successful in-memory equality correlation without storing either full address. |
 | `NAVIGATION_RESULT` | Whether the content script requested ordinary Back after an action response; this does not itself prove completion. |
@@ -81,6 +82,15 @@ bugs. A missing event, protected page, browser-owned gesture, cleared log or
 expired context prevents firm conclusions. The log cannot know whether an
 apparently successful action matched the user's intent.
 
+To investigate a missed swipe, correlate `GESTURE_INPUT`, `GESTURE_SESSION`
+and `BACK_ACTION` by time, tab and `gestureId`. A `PHYSICAL` transition without
+an eligible session suggests insufficient physical distance or another safety
+blocker; inertia never increases that distance. `NATIVE_INPUT_REQUIRED` means
+the action request lacked a completed direct-input interval. A successful
+`BACK_ACTION` still needs a subsequent tab or navigation event to prove the
+visible result. Historical 0.7.2 records may instead show the old acceleration
+rejection. Logs are not cleared by the 0.7.3 update.
+
 Clear both retained groups explicitly after inspection, if desired:
 
 ```js
@@ -89,7 +99,7 @@ await BacktrackGestureDebug.clearPersistentDiagnosticLog()
 
 ## Activation and verification
 
-Reload the unpacked extension and verify version `0.7.2`. Refresh already-open
+Reload the unpacked extension and verify version `0.7.3`. Refresh already-open
 pages so their content scripts match the worker. Test closure first in a
 disposable window: manually opened tabs with no Back history can now close,
 and a final tab can close that window. Persistent diagnostic records do not

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Backtrack Development",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "Swipe back through page history, then close tabs from right to left.",
   "permissions": [
     "storage",
@@ -19,7 +19,6 @@
       ],
       "js": [
         "src/shared/gesture-classifier.js",
-        "src/shared/gesture-commit-policy.js",
         "src/shared/gesture-stroke-boundary.js",
         "src/shared/gesture-visual-policy.js",
         "src/shared/navigation-snapshot.js",

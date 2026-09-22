@@ -5,6 +5,7 @@ export const DEFAULT_ACTION_LIMIT = 400;
 
 const DIAGNOSTIC_KINDS = new Set([
   "GESTURE_SESSION",
+  "GESTURE_INPUT",
   "BACK_ACTION",
   "GESTURE_OWNERSHIP",
   "NAVIGATION_STATE",
@@ -56,6 +57,11 @@ function safeTokens(values) {
 
 function optionalBoolean(value) {
   return typeof value === "boolean" ? value : null;
+}
+
+function gestureId(value) {
+  return typeof value === "string" && /^[0-9a-f]{8}-[1-9][0-9]*$/.test(value)
+    ? value : null;
 }
 
 export function diagnosticOrigin(value) {
@@ -156,6 +162,7 @@ export function sanitizeDiagnosticEntry(value, fallbackTime = Date.now()) {
   if (kind === "GESTURE_SESSION") {
     return {
       ...entry,
+      gestureId: gestureId(value?.gestureId),
       endReason: safeToken(value?.endReason),
       classification: safeToken(value?.classification),
       semanticDirection: safeToken(value?.semanticDirection),
@@ -166,6 +173,8 @@ export function sanitizeDiagnosticEntry(value, fallbackTime = Date.now()) {
       eventCount: usableId(value?.eventCount),
       peakHorizontalDeltaPx: roundedNumber(value?.peakHorizontalDeltaPx),
       freshStrokeEvidence: optionalBoolean(value?.freshStrokeEvidence),
+      nativeMomentumSupported: optionalBoolean(value?.nativeMomentumSupported),
+      physicalEventCount: usableId(value?.physicalEventCount),
       automaticActionRequested: optionalBoolean(value?.automaticActionRequested),
       automaticActionTrigger: safeToken(value?.automaticActionTrigger),
       actionRequestedAfterMs: roundedNumber(value?.actionRequestedAfterMs),
@@ -175,6 +184,9 @@ export function sanitizeDiagnosticEntry(value, fallbackTime = Date.now()) {
   if (kind === "BACK_ACTION") {
     return {
       ...entry,
+      gestureId: gestureId(value?.gestureId),
+      inputEndReason: safeToken(value?.inputEndReason),
+      physicalEventCount: usableId(value?.physicalEventCount),
       source: safeToken(value?.source),
       action: safeToken(value?.action),
       reason: safeToken(value?.reason),
@@ -188,6 +200,12 @@ export function sanitizeDiagnosticEntry(value, fallbackTime = Date.now()) {
       navigation: sanitizeNavigation(value?.navigation),
     };
   }
+
+  if (kind === "GESTURE_INPUT") return {
+    ...entry,
+    phase: safeToken(value?.phase),
+    nativeMomentumSupported: optionalBoolean(value?.nativeMomentumSupported),
+  };
 
   if (kind === "GESTURE_OWNERSHIP") return {
     ...entry,

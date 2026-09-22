@@ -9,7 +9,7 @@
     return;
   }
 
-  const VERSION = "0.7.2";
+  const VERSION = "0.7.3";
   const LOG_PREFIX = "[Backtrack:Gesture]";
   const SESSION_SUMMARY_PREFIX = "[Backtrack:Gesture:SessionJSON]";
   const THRESHOLD_SUMMARY_PREFIX = "[Backtrack:Gesture:ThresholdJSON]";
@@ -28,16 +28,14 @@
     GET: "BACKTRACK_GET_DIAGNOSTIC_LOG",
     CLEAR: "BACKTRACK_CLEAR_DIAGNOSTIC_LOG",
   });
-  const ACTION_FINISH_REASONS = new Set(["settled", "gap-before-next-event"]);
+  const ACTION_FINISH_REASONS = new Set(["settled", "gap-before-next-event", "native-momentum"]);
 
   const classifier = globalThis.BacktrackGestureClassifier;
-  const commitPolicy = globalThis.BacktrackGestureCommitPolicy;
   const strokeBoundary = globalThis.BacktrackGestureStrokeBoundary;
   const visualPolicy = globalThis.BacktrackGestureVisualPolicy;
   const gestureIndicator = globalThis.BacktrackGestureIndicator ?? null;
   if (
     !classifier ||
-    !commitPolicy ||
     !strokeBoundary ||
     !visualPolicy ||
     (window === window.top && !gestureIndicator)
@@ -46,9 +44,7 @@
       kind: "initialization-error",
       reason: !classifier
         ? "GESTURE_CLASSIFIER_UNAVAILABLE"
-        : !commitPolicy
-          ? "GESTURE_COMMIT_POLICY_UNAVAILABLE"
-          : !strokeBoundary
+        : !strokeBoundary
             ? "GESTURE_STROKE_BOUNDARY_UNAVAILABLE"
             : !visualPolicy
               ? "GESTURE_VISUAL_POLICY_UNAVAILABLE"
@@ -58,7 +54,6 @@
   }
 
   const DEFAULT_CONFIG = Object.freeze({
-    sessionGapMs: 160,
     settleMs: 220,
     minHorizontalDistancePx: 240,
     minHorizontalDominanceRatio: 4,
@@ -78,13 +73,12 @@
   let activeSession = null;
   /** @type {number | null} */
   let settleTimer = null;
-  /** @type {number | null} */
-  let earlyCommitTimer = null;
   let logSequence = 0;
   let sessionSequence = 0;
   let listening = false;
   let automaticActionInFlight = false;
-  let nextSessionFreshStrokeEvidence = false;
+  let nativeMomentumSupported = strokeBoundary.supported(globalThis.WheelEvent);
+  let lastInputPhase = null;
   let nativeRootBack = false;
   let pendingNativeRootBack = null;
   let lastRecordedGestureOwner = null;
@@ -190,7 +184,8 @@
     sendDiagnosticMessage(DIAGNOSTIC_MESSAGE_TYPES.RECORD, {
       diagnostic: {
         kind: "GESTURE_SESSION",
-        endReason: summary?.reason === "renewed-stroke" ? "RENEWED_STROKE" : null,
+        gestureId: summary?.sessionId,
+        endReason: summary?.reason?.toUpperCase().replaceAll("-", "_"),
         classification: evaluation?.classification,
         semanticDirection: evaluation?.semanticNavigationDirection,
         blockers: evaluation?.automaticAction?.blockers,
@@ -199,7 +194,8 @@
         directionConsistency: measurements?.directionConsistency,
         eventCount: measurements?.eventCount,
         peakHorizontalDeltaPx: measurements?.peakHorizontalDeltaPx,
-        freshStrokeEvidence: summary?.freshStrokeEvidence,
+        nativeMomentumSupported,
+        physicalEventCount: summary?.eventCount,
         automaticActionRequested: summary?.actionTiming?.requested,
         automaticActionTrigger: summary?.actionTiming?.trigger,
         actionRequestedAfterMs: summary?.actionTiming?.requestedAfterMs,
@@ -364,14 +360,7 @@
       horizontalScrollerTags: new Set(),
       modifierEventCount: 0,
       untrustedEventCount: 0,
-      possibleMomentumTailEventCount: 0,
-      freshStrokeEvidence: nextSessionFreshStrokeEvidence,
-      strokeStartDetector: strokeBoundary.create(),
-      renewedStrokeDetector: strokeBoundary.create(),
-      peakHorizontalDelta: 0,
-      peakHorizontalEventIndex: 0,
       thresholdReported: false,
-      earlyCommitArmedAtMs: null,
       automaticActionRequested: false,
       automaticActionTrigger: null,
       automaticActionRequestedAtMs: null,
@@ -388,14 +377,6 @@
   function candidateEvaluation(session) {
     return classifier.evaluate(session, {
       thresholds: config,
-      backDirection: semanticSettings.backDirection,
-      automaticActionsEnabled:
-        semanticSettingsLoaded && semanticSettings.automaticActionsEnabled,
-    });
-  }
-
-  function earlyCommitEvaluation(session) {
-    return commitPolicy.evaluate(session, {
       backDirection: semanticSettings.backDirection,
       automaticActionsEnabled:
         semanticSettingsLoaded && semanticSettings.automaticActionsEnabled,
@@ -430,7 +411,7 @@
     }
 
     const phase =
-      requestedPhase === "armed" || session.earlyCommitArmedAtMs !== null
+      requestedPhase === "armed" || candidateEvaluation(session).automaticAction.eligible
         ? "armed"
         : "tracking";
     const firstAppearance = !session.visualIndicatorShown;
@@ -499,16 +480,16 @@
         startPosition: session.startPosition,
       },
       momentum: {
-        standardDomPhaseAvailable: false,
-        heuristic: "DECAY_TAIL_ONLY",
-        possibleTailEventCount: session.possibleMomentumTailEventCount,
+        nativeMomentumSupported,
+        physicalEventCount: session.eventCount,
       },
-      freshStrokeEvidence: session.freshStrokeEvidence,
+      nativeInput: {
+        endReason: reason === "native-momentum" ? "NATIVE_MOMENTUM" :
+          ["settled", "gap-before-next-event"].includes(reason) ? "INPUT_IDLE" : null,
+        endedAtMs: Date.now(),
+        physicalEventCount: session.eventCount,
+      },
       actionTiming: {
-        earlyCommitArmedAfterMs:
-          session.earlyCommitArmedAtMs === null
-            ? null
-            : round(session.earlyCommitArmedAtMs - session.startedAtMs),
         requested: session.automaticActionRequested,
         trigger: session.automaticActionTrigger,
         requestedAfterMs:
@@ -531,20 +512,20 @@
       clearTimeout(settleTimer);
       settleTimer = null;
     }
-    if (earlyCommitTimer !== null) {
-      clearTimeout(earlyCommitTimer);
-      earlyCommitTimer = null;
-    }
-
     const session = activeSession;
     activeSession = null;
     const evaluation = candidateEvaluation(session);
-    const summary = createSessionSummary(session, reason, evaluation);
+    let summary = createSessionSummary(session, reason, evaluation);
     const shouldAttemptAutomaticAction =
       ACTION_FINISH_REASONS.has(reason) &&
       !session.automaticActionRequested &&
       summary.evaluation.automaticAction.eligible;
 
+    // Mark the request before persisting, including release/idle commits.
+    if (shouldAttemptAutomaticAction) {
+      void maybePerformAutomaticAction(summary, session, "PHYSICAL_END");
+      summary = createSessionSummary(session, reason, evaluation);
+    }
     lastCompletedSession = summary;
     record("session-end", summary, "info");
     persistGestureSummary(summary);
@@ -557,9 +538,7 @@
       session.visualIndicatorShown = false;
       session.visualIndicatorPhase = "cancelled";
     }
-    if (shouldAttemptAutomaticAction) {
-      void maybePerformAutomaticAction(summary, session, "SESSION_END");
-    } else {
+    if (!shouldAttemptAutomaticAction) {
       applyPendingGestureOwnership();
     }
     return summary;
@@ -622,7 +601,7 @@
       const response = await navigationStateApi.requestAutomaticBackAction({
         id: summary.sessionId,
         observedAtMs: summary.startedAtEpochMs,
-        freshStrokeEvidence: summary.freshStrokeEvidence === true,
+        nativeInput: summary.nativeInput,
       });
       record(
         "automatic-back-action",
@@ -656,68 +635,6 @@
     }
   }
 
-  function considerEarlyCommit(session) {
-    if (
-      frameContext.kind !== "TOP" ||
-      session.automaticActionRequested ||
-      earlyCommitTimer !== null
-    ) {
-      return;
-    }
-
-    const initial = earlyCommitEvaluation(session);
-    if (!initial.eligible) {
-      return;
-    }
-
-    session.earlyCommitArmedAtMs = performance.now();
-    updateGestureIndicator(session, "armed");
-    record(
-      "early-commit-armed",
-      {
-        sessionId: session.id,
-        armedAfterMs: round(
-          session.earlyCommitArmedAtMs - session.startedAtMs,
-        ),
-        confirmationMs: initial.confirmationMs,
-        evaluation: initial.classification,
-      },
-      "info",
-    );
-
-    earlyCommitTimer = window.setTimeout(() => {
-      earlyCommitTimer = null;
-      if (activeSession !== session || session.automaticActionRequested) {
-        return;
-      }
-
-      const confirmed = earlyCommitEvaluation(session);
-      if (!confirmed.eligible) {
-        session.earlyCommitArmedAtMs = null;
-        record("early-commit-disarmed", {
-          sessionId: session.id,
-          evaluation: confirmed.classification,
-        });
-        updateGestureIndicator(session);
-        return;
-      }
-
-      const summary = createSessionSummary(session, "early-commit");
-      record(
-        "gesture-committed",
-        {
-          sessionId: session.id,
-          decisionAfterMs: round(performance.now() - session.startedAtMs),
-          evaluation: confirmed.classification,
-          notice:
-            "The stronger early policy remained eligible through its confirmation window.",
-        },
-        "info",
-      );
-      void maybePerformAutomaticAction(summary, session, "EARLY_COMMIT");
-    }, initial.confirmationMs);
-  }
-
   function scheduleSessionFinish() {
     if (settleTimer !== null) {
       clearTimeout(settleTimer);
@@ -748,32 +665,29 @@
     }
     const now = performance.now();
     const normalized = normalizeDeltas(event);
-
-    if (activeSession?.automaticActionRequested && !automaticActionInFlight) {
-      const previous = activeSession;
-      const horizontalScrollContext = findHorizontalScrollContext(event, normalized.x);
-      const newStroke = strokeBoundary.observe(previous.renewedStrokeDetector, {
-        deltaX: normalized.x,
-        deltaY: normalized.y,
-        eligibleInput: event.isTrusted &&
-          event.deltaMode === WheelEvent.DOM_DELTA_PIXEL &&
-          !event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey &&
-          Math.sign(normalized.x) === Math.sign(previous.netX) &&
-          horizontalScrollContext?.canConsumeInDeltaDirection !== true,
+    const phase = strokeBoundary.phase(event);
+    if (phase === "UNTRUSTED") return;
+    if (phase !== lastInputPhase) {
+      lastInputPhase = phase;
+      record("native-input-phase", { phase }, "info");
+      sendDiagnosticMessage(DIAGNOSTIC_MESSAGE_TYPES.RECORD, {
+        diagnostic: { kind: "GESTURE_INPUT", phase, nativeMomentumSupported },
       });
-      if (newStroke) {
-        nextSessionFreshStrokeEvidence = true;
-        finishSession("renewed-stroke");
-        record("renewed-stroke-detected", {
-          previousSessionId: previous.id,
-          notice: "A strong new acceleration followed the earlier gesture's decay.",
-        }, "info");
-      }
+    }
+    if (phase === "UNSUPPORTED") {
+      nativeMomentumSupported = false;
+      finishSession("unsupported-input");
+      void refreshGestureOwnership();
+      return;
+    }
+    if (phase === "MOMENTUM") {
+      finishSession("native-momentum");
+      return;
     }
 
     if (
       activeSession &&
-      now - activeSession.lastEventAtMs > config.sessionGapMs
+      now - activeSession.lastEventAtMs >= config.settleMs
     ) {
       finishSession("gap-before-next-event");
     }
@@ -784,7 +698,6 @@
 
     if (!activeSession) {
       activeSession = createSession(now);
-      nextSessionFreshStrokeEvidence = false;
       record(
         "session-start",
         {
@@ -799,6 +712,7 @@
     const previousEventAtMs =
       session.eventCount === 0 ? null : session.lastEventAtMs;
     const defaultPreventedBefore = event.defaultPrevented;
+    if (defaultPreventedBefore) session.downstreamPreventedCount += 1;
     const preventDefaultAttempted = shouldPreventDefault(normalized);
     if (preventDefaultAttempted) {
       session.preventDefaultAttemptCount += 1;
@@ -812,21 +726,8 @@
       event,
       normalized.x,
     );
-    session.freshStrokeEvidence ||= strokeBoundary.observe(
-      session.strokeStartDetector,
-      {
-        deltaX: normalized.x,
-        deltaY: normalized.y,
-        eligibleInput: event.isTrusted &&
-          event.deltaMode === WheelEvent.DOM_DELTA_PIXEL &&
-          !event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey &&
-          horizontalScrollContext?.canConsumeInDeltaDirection !== true,
-      },
-    );
     const absoluteX = Math.abs(normalized.x);
     const absoluteY = Math.abs(normalized.y);
-    const previousPeak = session.peakHorizontalDelta;
-    let possibleMomentumTail = false;
 
     session.eventCount += 1;
     session.lastEventAtMs = now;
@@ -878,21 +779,8 @@
       };
     }
 
-    if (absoluteX > session.peakHorizontalDelta) {
-      session.peakHorizontalDelta = absoluteX;
-      session.peakHorizontalEventIndex = session.eventCount;
-    } else if (
-      session.eventCount >= 5 &&
-      previousPeak > 0 &&
-      absoluteX <= previousPeak * 0.45 &&
-      session.eventCount - session.peakHorizontalEventIndex >= 2 &&
-      Math.sign(normalized.x) === Math.sign(session.netX)
-    ) {
-      session.possibleMomentumTailEventCount += 1;
-      possibleMomentumTail = true;
-    }
-
     const nativePhaseFields = {
+      momentum: event.momentum,
       phase: readOptionalEventValue(event, "phase"),
       momentumPhase: readOptionalEventValue(event, "momentumPhase"),
       webkitMomentumPhase: readOptionalEventValue(event, "webkitMomentumPhase"),
@@ -926,10 +814,9 @@
       },
       timing: {
         eventTimeStamp: round(event.timeStamp),
-        possibleMomentumTail,
         nativePhaseFields,
         phaseNotice:
-          "WheelEvent has no standard gesture/momentum phase; values above are probes only.",
+          "Native momentum events are excluded before gesture classification.",
       },
       cancellation: {
         cancelable: event.cancelable,
@@ -989,7 +876,7 @@
           semanticNavigationDirection:
             evaluation.semanticNavigationDirection,
           notice:
-            "Provisional base threshold only. Early action requires the stronger commit policy and its confirmation window.",
+            "Physical input reached the threshold. Action waits for native momentum or input idle.",
           evaluation,
           navigationState:
             navigationStateApi?.getDiagnosticSnapshot?.() ?? {
@@ -1020,7 +907,6 @@
       }
     });
 
-    considerEarlyCommit(session);
     scheduleSessionFinish();
   }
 
@@ -1160,7 +1046,7 @@
     // gesture that we actually need to diagnose.
     if (owner !== lastRecordedGestureOwner) {
       lastRecordedGestureOwner = owner;
-      const reason = nativeRootBack ? "BROWSER" : "POSITIONAL_BACK";
+      const reason = nativeRootBack ? "NATIVE_MOMENTUM_UNAVAILABLE" : "POSITIONAL_BACK";
       record("gesture-ownership", { owner, reason }, "info");
       sendDiagnosticMessage(DIAGNOSTIC_MESSAGE_TYPES.RECORD, {
         diagnostic: {
@@ -1179,7 +1065,7 @@
     // Backtrack owns Back on every ordinary page, including root tabs.
     // The background still refuses a close when the history boundary is unclear.
     ++ownershipRequestSequence;
-    pendingNativeRootBack = false;
+    pendingNativeRootBack = !nativeMomentumSupported;
     applyPendingGestureOwnership();
   }
 
@@ -1189,9 +1075,7 @@
     semanticSettings = normalizeSemanticSettings(value);
     semanticSettingsLoaded = true;
     if (frameContext.kind === "TOP") {
-      if (!semanticSettings.automaticActionsEnabled) {
-        nativeRootBack = false;
-      }
+      nativeRootBack = semanticSettings.automaticActionsEnabled && !nativeMomentumSupported;
       applyRootOverscrollBehavior(
         semanticSettings.automaticActionsEnabled && !nativeRootBack ? "contain" : "unchanged",
       );
@@ -1328,6 +1212,7 @@
       activeSessionId: activeSession?.id ?? null,
       lastCompletedSessionId: lastCompletedSession?.sessionId ?? null,
       automaticActionInFlight,
+      nativeMomentumSupported,
       navigationOwner: nativeRootBack ? "BROWSER" : "BACKTRACK",
       semanticSettingsLoaded,
       semanticSettings: { ...semanticSettings },
@@ -1397,6 +1282,9 @@
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
       void refreshGestureOwnership();
+    } else {
+      finishSession("tab-hidden");
+      gestureIndicator?.hide({ delayMs: 0 });
     }
   });
   globalThis.navigation?.addEventListener("currententrychange", () => {

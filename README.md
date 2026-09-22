@@ -13,7 +13,7 @@ Back at B's entry  → close B, select A
 Back at A's entry  → close this window; Brave remains in the macOS Dock
 ```
 
-Tab position, not `openerTabId`, defines the return target in version 0.7.2.
+Tab position, not `openerTabId`, defines the return target in version 0.7.3.
 When Chromium reports an opener or a matching new-navigation target, it is
 used only as evidence that the new tab started from a link; it is not
 required to select the left-hand tab.
@@ -26,29 +26,33 @@ There are no dependencies, build tools, servers, analytics, or accounts.
 
 ## Status
 
-Development version **0.7.2** implements positional Back, an explicit
-last-tab window close, and renewed-swipe detection after a decaying trackpad
-tail. Automated tests cover the three-tab sequence, internal
-history, unknown history, pinned tabs, changed tab/window state, action
-failures, and gesture deduplication. A physical-trackpad acceptance run in
-Brave/macOS is still required. No release is implied by this source version.
+Development version **0.7.3** implements positional Back, an explicit
+last-tab window close, and browser-reported separation of physical input from
+trackpad inertia. It replaces the unreliable acceleration heuristic in 0.7.2.
+All 262 automated tests pass. A physical Brave/macOS regression on September
+22 confirmed child closure followed by immediate Back in the previous tab,
+without a repeated attempt or momentum-gate rejection. This is a focused fix
+verification, not a broad compatibility claim for every site or trackpad.
 
 This changes the previous safety rule: a manually opened tab with no Back
 history can now close on a Back gesture. An unrelated tab to the left can be
 selected. The older opener-based implementation and tests remain as
-historical development material, but are not the 0.7.2 production action.
+historical development material, but are not the 0.7.3 production action.
 
 ## Install or update in Brave
 
 1. Open `brave://extensions` and enable **Developer mode**.
 2. Choose **Load unpacked** and select this repository folder, or press
    **Reload** on an already installed Backtrack Development extension.
-3. Verify that Brave displays version **0.7.2**.
+3. Verify that Brave displays version **0.7.3**.
 4. Refresh ordinary web pages that were open before the reload. Newly opened
    tabs receive the current content script automatically.
 
-The code should also load in Chrome and other Chromium browsers, but Brave
-on macOS is the primary acceptance target.
+Automatic Backtrack actions require browser support for `WheelEvent.momentum`
+(introduced in Chromium 151). The running Brave/Chromium 153 build exposes it.
+Without this signal, Backtrack leaves native browser Back active and does not
+attempt automatic tab closure. The field does not identify finger count.
+Brave on macOS remains the primary acceptance target.
 
 Automatic actions remain off until Back direction has been calibrated. On
 an ordinary `http://` or `https://` page, select **Backtrack Development**
@@ -90,10 +94,14 @@ await BacktrackGestureDebug.disableAutomaticActions()
   activates its immediate left neighbor, and then closes the current tab.
   With exactly one tab, it closes only that normal, focused browser window.
   Pinned tabs and ambiguous states remain open.
-- The background gesture gate rejects duplicate gesture IDs and decaying
-  momentum across a tab switch. There is no 1.8-second waiting period: a
-  low-to-high, multi-event acceleration is accepted immediately as a new
-  deliberate gesture.
+- `src/shared/gesture-stroke-boundary.js` reads trusted `WheelEvent.momentum`.
+  Only direct input contributes to a candidate. The first inertia event ends
+  that candidate; subsequent inertia is ignored, including after a tab switch.
+  If no inertia follows, 220 ms of input silence ends the candidate instead.
+  Backtrack no longer closes a tab while a continuous physical stroke is arriving.
+- The background gesture gate rejects duplicate IDs and overlapping input
+  intervals across tabs. A new completed physical stroke needs no acceleration
+  ramp or post-action cooldown. Missing phase support preserves native Back.
 
 When history evidence is unknown, Backtrack requests ordinary page Back
 without closing anything. For a tab already open when the extension started,
@@ -136,7 +144,7 @@ describe versions before 0.7.0.
 
 Use disposable ordinary web pages and a window with no important unsaved work.
 
-- [ ] Verify 0.7.2 is loaded and refresh existing test pages.
+- [ ] Verify 0.7.3 is loaded and refresh existing test pages.
 - [ ] Open `A | B | C` in one window. One right swipe closes C and selects B;
       the next deliberate swipe closes B and selects A.
 - [ ] A third deliberate swipe closes that window. Brave remains in the Dock
@@ -146,6 +154,9 @@ Use disposable ordinary web pages and a window with no important unsaved work.
 - [ ] A manually opened unrelated tab follows the same position rule.
 - [ ] Vertical scrolling and horizontal carousels/tables do not close tabs.
 - [ ] One swipe plus its momentum performs at most one action.
+- [ ] Immediately after closing C, the next deliberate swipe traverses B's
+      internal history once, without repeated attempts or a multi-second wait.
+- [ ] Check both an abrupt second stroke and a slow stroke without inertia.
 - [ ] A pinned tab, unfocused window, unclear history, or moved tab stays open.
 - [ ] A tab with earlier history does not close merely because the extension
       was reloaded at its current page.

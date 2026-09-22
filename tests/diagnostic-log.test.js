@@ -33,6 +33,25 @@ class MemoryStorageArea {
   }
 }
 
+test("native input diagnostics retain correlation, not arbitrary gesture content", () => {
+  const action = sanitizeDiagnosticEntry({
+    kind: "BACK_ACTION", gestureId: "deadbeef-12", inputEndReason: "NATIVE_MOMENTUM",
+    physicalEventCount: 17, rawEvents: [{ deltaX: -800 }],
+  });
+  assert.equal(action.gestureId, "deadbeef-12");
+  assert.equal(action.inputEndReason, "NATIVE_MOMENTUM");
+  assert.equal(action.physicalEventCount, 17);
+  assert.equal("rawEvents" in action, false);
+  assert.equal(sanitizeDiagnosticEntry({ kind: "BACK_ACTION", gestureId: "https://secret.test" }).gestureId, null);
+  const phase = sanitizeDiagnosticEntry({
+    kind: "GESTURE_INPUT", phase: "MOMENTUM", nativeMomentumSupported: true,
+    rawEvents: ["private"],
+  });
+  assert.equal(phase.phase, "MOMENTUM");
+  assert.equal(phase.nativeMomentumSupported, true);
+  assert.equal("rawEvents" in phase, false);
+});
+
 test("persistent diagnostics discard URLs, titles, raw input, and arbitrary fields", () => {
   const entry = sanitizeDiagnosticEntry({
     kind: "GESTURE_SESSION",
@@ -58,6 +77,7 @@ test("persistent diagnostics discard URLs, titles, raw input, and arbitrary fiel
     origin: null,
     version: null,
     documentId: null,
+    gestureId: null,
     endReason: null,
     classification: "HORIZONTAL_NEGATIVE_X",
     semanticDirection: "BACK_GESTURE",
@@ -68,6 +88,8 @@ test("persistent diagnostics discard URLs, titles, raw input, and arbitrary fiel
     eventCount: null,
     peakHorizontalDeltaPx: null,
     freshStrokeEvidence: null,
+    nativeMomentumSupported: null,
+    physicalEventCount: null,
     automaticActionRequested: null,
     automaticActionTrigger: null,
     actionRequestedAfterMs: null,

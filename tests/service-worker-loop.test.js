@@ -61,7 +61,7 @@ async function assertWorkerRecovery(t, navigationType) {
   const chrome = {
     storage: { session: storage(), local: storage() },
     runtime: {
-      getManifest: () => ({ version: "0.7.2" }),
+      getManifest: () => ({ version: "0.7.3" }),
       onMessage: event(), onStartup: event(), onInstalled: event(),
     },
     tabs: {
@@ -151,6 +151,7 @@ async function assertWorkerRecovery(t, navigationType) {
         source: "AUTOMATIC",
         id: "redirect-loop-gesture",
         observedAtMs: Date.now(),
+        nativeInput: { endReason: "NATIVE_MOMENTUM", endedAtMs: now, physicalEventCount: 12 },
       },
     }, sender(ids.github, githubUrl));
     assert.equal(first.action, "USE_INTERNAL_HISTORY");
@@ -190,8 +191,8 @@ async function assertWorkerRecovery(t, navigationType) {
         source: "AUTOMATIC", id: "rapid-follow-up", observedAtMs: now,
       },
     }, sender(ids.bouncedGithub, githubUrl));
-    assert.equal(tooSoon.reason, "MOMENTUM_CONTINUATION");
-    assert.equal(tooSoon.gestureGate.reason, "MOMENTUM_CONTINUATION");
+    assert.equal(tooSoon.reason, "NATIVE_INPUT_REQUIRED");
+    assert.equal(tooSoon.gestureGate.reason, "NATIVE_INPUT_REQUIRED");
     assert.equal(tabs.has(20), true);
     assert.equal(tabs.get(10).active, false);
 
@@ -201,7 +202,7 @@ async function assertWorkerRecovery(t, navigationType) {
       snapshot: bouncedSnapshot,
       gesture: {
         source: "AUTOMATIC", id: "next-deliberate-gesture", observedAtMs: now,
-        freshStrokeEvidence: true,
+        nativeInput: { endReason: "NATIVE_MOMENTUM", endedAtMs: now, physicalEventCount: 12 },
       },
     }, sender(ids.bouncedGithub, githubUrl));
     assert.equal(recovered.action, "CLOSED_TAB_TO_LEFT");
@@ -228,6 +229,6 @@ async function assertWorkerRecovery(t, navigationType) {
 }
 
 for (const navigationType of ["push", "replace", "traverse"]) {
-  test(`the real worker recovers a redirected-Back ${navigationType} loop on renewed acceleration`,
+  test(`the real worker recovers a redirected-Back ${navigationType} loop on completed physical input`,
     async (t) => assertWorkerRecovery(t, navigationType));
 }

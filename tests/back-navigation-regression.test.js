@@ -107,8 +107,12 @@ function createBrowser() {
       get backCalls() { return backCalls; },
       get navigation() { return navigation; },
       back: async (gestureId, freshStrokeEvidence = true) => {
+        now += 250;
         const result = await context.BacktrackNavigationState.requestAutomaticBackAction({
-          id: gestureId, observedAtMs: now, freshStrokeEvidence,
+          id: gestureId, observedAtMs: now,
+          nativeInput: freshStrokeEvidence ? {
+            endReason: "NATIVE_MOMENTUM", endedAtMs: now, physicalEventCount: 12,
+          } : null,
         });
         await Promise.all([...pending]);
         return result;
@@ -128,7 +132,7 @@ for (const sameOrigin of [true, false]) {
     assert.equal(browser.tabs.get(10).active, true);
     assert.deepEqual(browser.closed, [20]);
 
-    assert.equal((await parent.back("momentum-tail", false)).reason, "MOMENTUM_CONTINUATION");
+    assert.equal((await parent.back("momentum-tail", false)).reason, "NATIVE_INPUT_REQUIRED");
     assert.equal(parent.backCalls, 0);
     const back = await parent.back("parent-back-1");
     assert.equal(back.internalNavigationRequested, true);

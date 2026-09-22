@@ -4,6 +4,7 @@ const WINDOW_STORAGE_PREFIX = "backtrack.gesture.action-gate.window.";
 export const GESTURE_GATE_REASONS = Object.freeze({
   ACCEPTED: "ACCEPTED",
   INVALID_REQUEST: "INVALID_REQUEST",
+  NATIVE_INPUT_REQUIRED: "NATIVE_INPUT_REQUIRED",
   DUPLICATE_GESTURE: "DUPLICATE_GESTURE",
   MOMENTUM_CONTINUATION: "MOMENTUM_CONTINUATION",
 });
@@ -25,7 +26,7 @@ function validGestureId(value) {
 }
 
 export class GestureActionGate {
-  constructor(storageArea, stateRetentionMs = 10_000) {
+  constructor(storageArea) {
     if (
       !storageArea ||
       typeof storageArea.get !== "function" ||
@@ -34,14 +35,7 @@ export class GestureActionGate {
     ) {
       throw new TypeError("GestureActionGate requires a storage area.");
     }
-    if (!Number.isFinite(stateRetentionMs) || stateRetentionMs < 1000) {
-      throw new TypeError(
-        "GestureActionGate requires at least 1000 ms of gesture-state retention.",
-      );
-    }
-
     this.storageArea = storageArea;
-    this.stateRetentionMs = stateRetentionMs;
     this.queues = new Map();
   }
 
@@ -62,6 +56,7 @@ export class GestureActionGate {
     const safeTabId = usableId(tabId);
     const safeWindowId = usableId(windowId);
     const observedAtMs = gesture?.observedAtMs;
+    const input = gesture?.nativeInput;
     if (
       safeTabId === null ||
       safeWindowId === null ||
@@ -75,6 +70,13 @@ export class GestureActionGate {
         ok: false,
         reason: GESTURE_GATE_REASONS.INVALID_REQUEST,
       });
+    }
+    if (!input ||
+        !["NATIVE_MOMENTUM", "INPUT_IDLE"].includes(input.endReason) ||
+        !Number.isFinite(input.endedAtMs) || input.endedAtMs < observedAtMs ||
+        input.endedAtMs > nowMs + 1000 ||
+        !Number.isInteger(input.physicalEventCount) || input.physicalEventCount < 8) {
+      return Promise.resolve({ ok: false, reason: GESTURE_GATE_REASONS.NATIVE_INPUT_REQUIRED });
     }
 
     const tabKey = tabStorageKey(safeTabId);
@@ -99,9 +101,8 @@ export class GestureActionGate {
         ["WINDOW", previousWindow],
       ]) {
         if (
-          Number.isFinite(previous?.claimedAtMs) &&
-          nowMs - previous.claimedAtMs < this.stateRetentionMs &&
-          gesture?.freshStrokeEvidence !== true
+          Number.isFinite(previous?.inputEndedAtMs) &&
+          observedAtMs < previous.inputEndedAtMs
         ) {
           return {
             ok: false,
@@ -113,22 +114,22 @@ export class GestureActionGate {
 
       await this.storageArea.set({
         [tabKey]: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           gestureId: gesture.id,
           claimedAtMs: nowMs,
-          freshStrokeEvidence: gesture?.freshStrokeEvidence === true,
+          inputEndedAtMs: input.endedAtMs,
         },
         [windowKey]: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           gestureId: gesture.id,
           claimedAtMs: nowMs,
-          freshStrokeEvidence: gesture?.freshStrokeEvidence === true,
+          inputEndedAtMs: input.endedAtMs,
         },
       });
       return {
         ok: true,
         reason: GESTURE_GATE_REASONS.ACCEPTED,
-        freshStrokeEvidence: gesture?.freshStrokeEvidence === true,
+        inputEndReason: input.endReason,
       };
     });
   }

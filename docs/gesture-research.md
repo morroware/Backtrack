@@ -156,8 +156,9 @@ finishes after 220 ms of inactivity. A possible decaying tail is marked only
 heuristically when several later horizontal values are clearly below the
 preceding peak and keep the same direction.
 
-This marker is **not** a reliable momentum field. The standard exposes no such
-phase. The heuristic exists only to make measurements easier to compare.
+This historical marker is **not** a reliable momentum field. The original
+research incorrectly assumed no browser-provided field was available; see
+the 0.7.3 correction below. The heuristic was only a comparison aid.
 
 ## Preliminary thresholds
 
@@ -386,12 +387,42 @@ this evidence without changing the historical Phase 1 measurements above:
   momentum tail;
 - completed-sequence evaluation remains the fallback;
 - a session-backed tab-and-window gate rejects duplicate IDs and decaying
-  momentum tails after navigation or a tab switch; since version 0.7.2,
-  explicit renewed-acceleration evidence is accepted without a fixed wait.
+  momentum tails after navigation or a tab switch. Version 0.7.2 later tried
+  renewed-acceleration evidence; the findings below supersede that approach.
 
 This is implementation progress, not new physical-trackpad evidence and not a
 production Go. The extended real-site and multi-configuration matrix remains
 open. See [gesture-safety.md](gesture-safety.md) for the exact policy.
+
+## Version 0.7.3: native momentum correction
+
+On September 22, 2026, the latest retained 0.7.2 incident showed a successful
+child close followed by repeated `MOMENTUM_CONTINUATION` rejections in the
+previous tab. The strict low-to-high acceleration detector did not report
+fresh-stroke evidence in any of the 20 completed sequences inspected. Nine
+of 17 action requests were rejected. This is evidence of a failing heuristic,
+not evidence that another large cooldown would fix the interaction.
+
+The earlier claim that a DOM inertia signal was unavailable was incorrect:
+[Chrome 151 introduced `WheelEvent.momentum`](https://developer.chrome.com/release-notes/151#wheel_event_momentum).
+The running Brave reported Chromium 153 and
+`"momentum" in WheelEvent.prototype === true`. Chromium derives this boolean
+from its native momentum phase. A synthetic default event reporting `false`
+confirms API presence only; it does not establish real trackpad behavior.
+
+Version 0.7.3 therefore removes the acceleration-ramp requirement and stops
+early actions during an ongoing direct-input sequence. It evaluates direct
+input at the first native inertia event, or after 220 ms of input silence
+when no inertia follows. Inertia arriving in another tab is ignored before
+classification. Duplicate IDs and overlapping input intervals remain guarded;
+there is no multi-second post-action lockout. If the API is absent, native
+browser Back remains active and automatic Backtrack closure is unavailable.
+
+The release gate distinguishes automated event-to-navigation coverage, live
+API presence and physical-trackpad acceptance. The first two are not a
+substitute for the third. Direct-input-only thresholds, browser containment
+and the no-inertia idle fallback still require physical validation. The field
+does not identify two fingers or expose all native gesture/contact phases.
 
 ## Smallest alternatives if the result turns negative
 

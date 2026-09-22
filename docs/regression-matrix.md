@@ -314,7 +314,7 @@ Backtrack content script cannot run on that internal error document, so no
 ordinary trackpad gesture can reach the extension there. This is an explicit
 pure-extension limitation, not a gesture-classifier result.
 
-## Acceptance result
+## Original regression acceptance result
 
 The issue-level regression gate passes for the tested Brave/macOS setup:
 
@@ -331,3 +331,53 @@ This is not a broad production-compatibility claim. The extended research
 matrix still needs Natural Scrolling on/off comparison, more gesture speeds,
 real-world tables/carousels/Kanban boards, Chrome, additional Brave versions,
 and another Mac/trackpad. Any repeatable false tab closure remains a No-Go.
+
+## Version 0.7.3 — September 22, 2026
+
+Automated result: **262 passed, 0 failed**. New integrated tests feed raw wheel
+events into the real gesture content script and navigation content script,
+then the real message handler, gate, history tracker and positional strategy.
+Browser APIs and time are simulated; the tests do not preset gesture success
+or fresh-stroke evidence. Abrupt, gradual and modest direct-input profiles all
+close the child, ignore inherited inertia, and traverse the previous tab's
+history on each new stroke. C → B → A → window close and the no-inertia idle
+fallback also pass.
+
+Additional checks cover missing native momentum support, duplicate/overlapping
+claims, old 0.7.2 gate state, worker restart, phase-log filtering, tab hiding,
+page cancellation, horizontal scrolling, vertical input, modifiers and
+synthetic events. The earlier early-commit module remains historical test
+material but is not loaded by the manifest.
+
+Live API check: regular Brave reported Chromium 153 and the native momentum
+property on `WheelEvent.prototype`. The installed content script reported
+version 0.7.3, native support and calibrated `NEGATIVE_X` Back.
+
+The first child-close observation at
+18:32:31 UTC passed: 15 direct-input events, 542 px, then `NATIVE_MOMENTUM`
+and exactly one `CLOSED_TAB_TO_LEFT`. The intended follow-up-history case was
+not valid: automation had opened the child next to a different active tab.
+The unchanged prepared page therefore does not establish a follow-up failure
+or pass. The test was reset with visibly verified adjacent test tabs.
+
+### Corrected physical regression — PASS for the reported interaction
+
+With the test parent actually activated before opening its child, both test
+tabs were visibly adjacent. The user performed two normal rightward swipes
+without an instructed pause. Browser state and persistent logs confirmed:
+
+| UTC time | Direct input and boundary | Verified result |
+| --- | --- | --- |
+| 18:34:20.467–20.667 | 20 physical events, 554 px, native inertia boundary | `CLOSED_TAB_TO_LEFT`; parent activated at 20.675, child removed at 20.725. Action response: 60 ms. |
+| 18:34:21.369–21.527 | 19 physical events, 727 px, native inertia boundary | `USE_BROWSER_HISTORY`; response 2 ms, subsequent navigation observed, visible URL `?step=2` → `?step=1`. |
+
+The second physical stroke began 644 ms after child removal and succeeded
+without a repeated attempt or gate rejection. This parent predated the reload,
+so ordinary-history fallback was expected and still performed the Back step.
+Action response durations exclude the user's stroke and browser paint time.
+No additional tab/page action was observed from either inertia tail.
+
+This passes the focused child-close → previous-tab Back regression. It does
+not re-certify every manual row above. Three-tab/window closure, non-inertial
+idle completion, unsupported-browser behavior and scrolling safeguards were
+covered automatically, not re-tested physically in this focused run.

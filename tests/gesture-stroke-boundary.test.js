@@ -1,45 +1,26 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-
 await import("../src/shared/gesture-stroke-boundary.js");
-
 const boundary = globalThis.BacktrackGestureStrokeBoundary;
-const sample = (state, magnitude, eligibleInput = true) =>
-  boundary.observe(state, {
-    deltaX: -magnitude, deltaY: 0, eligibleInput,
-  });
 
-test("decaying momentum never creates another gesture", () => {
-  const state = boundary.create();
-  for (const magnitude of [180, 130, 90, 55, 35, 18, 12, 9, 7, 5, 3, 1]) {
-    assert.equal(sample(state, magnitude), false);
+test("native phase does not depend on a low-to-high ramp", () => {
+  for (const deltaX of [-8, -80, -300, -30]) {
+    assert.equal(boundary.phase({ deltaX, isTrusted: true, momentum: false }), "PHYSICAL");
+    assert.equal(boundary.phase({ deltaX, isTrusted: true, momentum: true }), "MOMENTUM");
   }
 });
-
-test("a sustained new acceleration after a valley creates one boundary", () => {
-  const state = boundary.create();
-  for (const magnitude of [100, 50, 18, 12, 21, 35]) {
-    assert.equal(sample(state, magnitude), false);
-  }
-  assert.equal(sample(state, 60), true);
-});
-
-test("noisy or page-owned movement cannot rearm the gesture", () => {
-  const noisy = boundary.create();
-  for (const magnitude of [12, 24, 20, 38, 55, 47, 65]) {
-    assert.equal(sample(noisy, magnitude), false);
-  }
-  const pageOwned = boundary.create();
-  for (const magnitude of [12, 21, 35, 60]) {
-    assert.equal(sample(pageOwned, magnitude, false), false);
+test("missing or malformed native evidence cannot authorize automatic navigation", () => {
+  for (const momentum of [undefined, null, 0, 1, "false"]) {
+    assert.equal(boundary.phase({ isTrusted: true, momentum }), "UNSUPPORTED");
   }
 });
-
-test("one confirmed rise resets before another rise can be confirmed", () => {
-  const state = boundary.create();
-  for (const magnitude of [12, 21, 35]) assert.equal(sample(state, magnitude), false);
-  assert.equal(sample(state, 60), true);
-  for (const magnitude of [70, 90, 120]) assert.equal(sample(state, magnitude), false);
-  for (const magnitude of [15, 25, 40]) assert.equal(sample(state, magnitude), false);
-  assert.equal(sample(state, 70), true);
+test("synthetic input cannot provide physical evidence", () => {
+  assert.equal(boundary.phase({ isTrusted: false, momentum: false }), "UNTRUSTED");
+});
+test("feature detection does not mistake absent support for physical input", () => {
+  class ModernWheel {}
+  Object.defineProperty(ModernWheel.prototype, "momentum", { value: false });
+  assert.equal(boundary.supported(ModernWheel), true);
+  assert.equal(boundary.supported(class OldWheel {}), false);
+  assert.equal(boundary.supported(undefined), false);
 });
